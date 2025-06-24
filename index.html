@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Conversor de Soja: Bushel para Saca</title>
+    <title>Conversor de Preço da Soja (CBOT para Brasil)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -27,25 +27,49 @@
         .btn-clear:hover {
             background-color: #ea580c; /* orange-600 */
         }
+        .input-error {
+            border-color: #ef4444; /* red-500 */
+            --tw-ring-color: #ef4444;
+        }
+        .loader {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
 
-    <div class="converter-card w-full max-w-lg mx-4 p-8 rounded-2xl shadow-lg border border-gray-200">
+    <div class="converter-card w-full max-w-lg mx-auto p-6 sm:p-8 rounded-2xl shadow-lg border border-gray-200">
         <!-- Cabeçalho -->
         <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">Conversor de Safra de Soja</h1>
-            <p class="text-gray-600 mt-2">Converta Bushels para Sacas de 60kg</p>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-800">Conversor de Preço da Soja</h1>
+            <p class="text-gray-600 mt-2 text-sm sm:text-base">CBOT (Dólar/Bushel) para Brasil (Real/Saca)</p>
         </div>
 
         <!-- Formulário de Conversão -->
-        <div class="space-y-6">
+        <div class="space-y-5">
             <div>
-                <label for="bushels" class="block text-sm font-medium text-gray-700 mb-1">Valor em Bushels (bu)</label>
-                <input type="number" id="bushels" placeholder="Ex: 100" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500 text-lg">
+                <label for="cbotPrice" class="block text-sm font-medium text-gray-700 mb-1">Preço em Chicago (Dólares por Bushel)</label>
+                <input type="number" id="cbotPrice" step="0.01" placeholder="Ex: 10.37" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500 text-lg transition">
+            </div>
+            <div>
+                <label for="exchangeRate" class="block text-sm font-medium text-gray-700 mb-1">Cotação do Dólar (R$)</label>
+                <div class="relative">
+                    <input type="number" id="exchangeRate" step="0.01" placeholder="Buscando..." class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500 text-lg transition" disabled>
+                    <div id="rateStatus" class="absolute right-3 top-1/2 -translate-y-1/2"></div>
+                </div>
             </div>
 
-            <div class="flex items-center justify-center space-x-4">
+            <div class="flex flex-col sm:flex-row items-center justify-center space-y-3 sm:space-y-0 sm:space-x-4 pt-2">
                 <button id="convertBtn" class="btn-convert w-full text-white font-bold py-3 px-4 rounded-lg shadow-md">
                     Converter
                 </button>
@@ -57,56 +81,96 @@
 
         <!-- Área de Resultado -->
         <div id="resultArea" class="mt-8 text-center hidden">
-             <p class="text-gray-600 text-lg">Equivale a:</p>
-             <p id="resultSacas" class="text-4xl font-bold text-green-700"></p>
-             <p id="resultKg" class="text-base text-gray-500 mt-1"></p>
+             <p class="text-gray-600 text-lg">Preço equivalente da saca de 60kg:</p>
+             <p id="resultBRL" class="text-4xl sm:text-5xl font-bold text-green-700"></p>
+             <div id="summary" class="text-sm text-gray-500 mt-2"></div>
         </div>
         
         <!-- Nota de rodapé com a taxa de conversão -->
-        <div class="mt-8 text-center">
+        <div class="mt-8 text-center border-t pt-4">
             <p class="text-xs text-gray-500">Taxa de conversão utilizada: 1 bushel de soja ≈ 27.2155 kg.</p>
         </div>
 
     </div>
 
     <script>
-        // --- Constantes e Variáveis ---
-        const bushelInput = document.getElementById('bushels');
+        // --- Elementos do DOM ---
+        const cbotPriceInput = document.getElementById('cbotPrice');
+        const exchangeRateInput = document.getElementById('exchangeRate');
+        const rateStatus = document.getElementById('rateStatus');
         const convertBtn = document.getElementById('convertBtn');
         const clearBtn = document.getElementById('clearBtn');
         const resultArea = document.getElementById('resultArea');
-        const resultSacas = document.getElementById('resultSacas');
-        const resultKg = document.getElementById('resultKg');
-        
-        // Fatores de conversão
+        const resultBRL = document.getElementById('resultBRL');
+        const summary = document.getElementById('summary');
+
+        // --- Constantes de Conversão ---
         const BUSHEL_SOJA_EM_KG = 27.2155;
         const SACA_EM_KG = 60;
-
-        // --- Funções ---
+        const API_URL = 'https://open.er-api.com/v6/latest/USD';
 
         /**
-         * Realiza a conversão de bushels para sacas e kg.
+         * Busca a cotação do Dólar atualizada de uma API pública.
          */
-        function converter() {
-            const bushels = parseFloat(bushelInput.value);
+        async function fetchAndUpdateExchangeRate() {
+            rateStatus.innerHTML = '<div class="loader"></div>';
+            exchangeRateInput.disabled = true;
 
-            // Validação de entrada
-            if (isNaN(bushels) || bushels <= 0) {
-                alert("Por favor, insira um valor numérico válido e positivo.");
-                bushelInput.focus();
+            try {
+                const response = await fetch(API_URL);
+                if (!response.ok) {
+                    throw new Error('Falha na resposta da rede');
+                }
+                const data = await response.json();
+                const brlRate = data.rates.BRL;
+
+                if (brlRate) {
+                    exchangeRateInput.value = brlRate.toFixed(2);
+                    rateStatus.textContent = '✅';
+                } else {
+                    throw new Error('Cotação do BRL não encontrada');
+                }
+            } catch (error) {
+                console.error("Erro ao buscar cotação:", error);
+                rateStatus.textContent = '⚠️';
+                exchangeRateInput.value = '5.44'; // Valor padrão em caso de erro
+                exchangeRateInput.placeholder = 'Erro ao buscar';
+            } finally {
+                exchangeRateInput.disabled = false;
+            }
+        }
+
+        /**
+         * Realiza a conversão do preço.
+         */
+        function converterPreco() {
+            cbotPriceInput.classList.remove('input-error');
+            exchangeRateInput.classList.remove('input-error');
+            
+            const cbotPrice = parseFloat(cbotPriceInput.value);
+            const exchangeRate = parseFloat(exchangeRateInput.value);
+            let temErro = false;
+
+            if (isNaN(cbotPrice) || cbotPrice <= 0) {
+                cbotPriceInput.classList.add('input-error');
+                temErro = true;
+            }
+            if (isNaN(exchangeRate) || exchangeRate <= 0) {
+                exchangeRateInput.classList.add('input-error');
+                temErro = true;
+            }
+
+            if (temErro) {
+                resultArea.classList.add('hidden');
                 return;
             }
 
-            // Cálculo
-            const totalKg = bushels * BUSHEL_SOJA_EM_KG;
-            const totalSacas = totalKg / SACA_EM_KG;
-
-            // Exibição do resultado
-            // Formata os números para melhor leitura
-            const formatoNumero = { minimumFractionDigits: 2, maximumFractionDigits: 4 };
-            resultSacas.textContent = `${totalSacas.toLocaleString('pt-BR', formatoNumero)} sacas`;
-            resultKg.textContent = `(${totalKg.toLocaleString('pt-BR', formatoNumero)} kg)`;
+            const precoUsdPorKg = cbotPrice / BUSHEL_SOJA_EM_KG;
+            const precoUsdPorSaca = precoUsdPorKg * SACA_EM_KG;
+            const precoBrlPorSaca = precoUsdPorSaca * exchangeRate;
             
+            resultBRL.textContent = precoBrlPorSaca.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+            summary.innerHTML = `Baseado em ${cbotPrice.toLocaleString('en-US', {style:'currency', currency:'USD'})}/bushel e R$ ${exchangeRate.toFixed(2)}/dólar.`;
             resultArea.classList.remove('hidden');
         }
 
@@ -114,23 +178,20 @@
          * Limpa os campos de entrada e o resultado.
          */
         function limparCampos() {
-            bushelInput.value = '';
+            cbotPriceInput.value = '';
             resultArea.classList.add('hidden');
-            resultSacas.textContent = '';
-            resultKg.textContent = '';
-            bushelInput.focus();
+            cbotPriceInput.classList.remove('input-error');
+            exchangeRateInput.classList.remove('input-error');
+            cbotPriceInput.focus();
         }
 
         // --- Event Listeners ---
-        convertBtn.addEventListener('click', converter);
+        document.addEventListener('DOMContentLoaded', fetchAndUpdateExchangeRate);
+        convertBtn.addEventListener('click', converterPreco);
         clearBtn.addEventListener('click', limparCampos);
         
-        // Permite a conversão pressionando "Enter" no campo de input
-        bushelInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                converter();
-            }
-        });
+        cbotPriceInput.addEventListener('keydown', (e) => e.key === 'Enter' && exchangeRateInput.focus());
+        exchangeRateInput.addEventListener('keydown', (e) => e.key === 'Enter' && converterPreco());
     </script>
 
 </body>
